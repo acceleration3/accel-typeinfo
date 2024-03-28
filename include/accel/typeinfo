@@ -1,0 +1,160 @@
+#ifndef ACCEL_TYPEINFO_HEADER
+#define ACCEL_TYPEINFO_HEADER
+
+#include <atomic>
+#include <string>
+
+#include <cstddef>
+#include <cstdint>
+
+#include <accel/macros>
+#include <accel/compat>
+
+namespace accel
+{
+    using type_id = std::uint64_t;
+
+    namespace details
+    {
+        template<typename T>
+        struct remove_cvref { using type = typename std::remove_cv<typename std::remove_reference<T>::type>::type; };
+
+        // FNv-1a 64 bit hash function
+        inline constexpr std::uint64_t hash_fnv1a(const char* const str, std::size_t length, const std::uint64_t value = 0xcbf29ce484222325) noexcept
+        {
+            return length == 0 ? value : hash_fnv1a(str + 1, length - 1, (value ^ uint64_t((uint8_t)str[0])) * 0x100000001b3);
+        }
+
+        template<typename T>
+        constexpr basic_string_view<char> get_signature()
+        {
+#ifdef ACC_PRETTY_FUNCTION
+            return basic_string_view<char>(ACC_PRETTY_FUNCTION);
+#else
+            return basic_string_view<char>("");
+#endif
+        }
+
+        constexpr std::size_t get_type_start_position(string_view signature)
+        {
+#ifdef COMPILER_MSVC
+            return signature.find_first_of("<") + 1;
+#else
+            return signature.find_first_of("=") + 2;
+#endif
+        }
+
+        constexpr std::size_t get_type_end_position(string_view signature)
+        {
+#ifdef COMPILER_MSVC
+            return signature.find_first_of(">");
+#else
+            return signature.find_last_of("]");
+#endif
+        }
+
+        template<typename T>
+        struct type_name
+        {
+            static constexpr string_view get()
+            {
+#ifdef ACC_PRETTY_FUNCTION
+                return get_signature<T>().substr(get_type_start_position(get_signature<T>()), get_type_end_position(get_signature<T>()) - get_type_start_position(get_signature<T>()));
+#else
+                return get_signature<T>();
+#endif
+            }
+        };
+
+        struct type_index
+        {
+            static type_id get_next()
+            {
+                static std::atomic<type_id> value;
+                return value++;
+            }
+        };
+    }
+
+    template<typename T>
+    struct ACC_EXPORT type_index
+    {
+        static type_id get()
+        {
+            static type_id value = details::type_index::get_next();
+            return value;
+        }
+    };
+
+    template<typename T>
+    struct type_name
+    {
+        static std::string get()
+        {
+#ifdef ACC_PRETTY_FUNCTION
+            return details::type_name<T>::get();
+#else
+            return "type_id(" + std::to_string(type_index<T>::get()) + ")";
+#endif
+        }
+    };
+
+    template<typename T>
+    struct type_hash
+    {
+        static constexpr type_id get()
+        {
+#ifdef ACC_PRETTY_FUNCTION
+            return details::hash_fnv1a(details::type_name<T>::get().get_data(), details::type_name<T>::get().get_size());
+#else
+            return type_index<T>::get();
+#endif
+        }
+    };
+
+    class type_info
+    {
+    public:
+        template<typename T>
+        type_info(in_place_type_t<T>) :
+            m_hash(type_hash<T>::get()),
+            m_index(type_index<T>::get()),
+            m_name(type_name<T>::get()) {}
+
+        std::string get_name() const { return m_name; }
+        type_id get_hash() const { return m_hash; }
+        type_id get_index() const { return m_index; }
+
+    private:
+        type_id m_hash;
+        type_id m_index;
+        std::string m_name;
+    };
+
+    namespace details
+    {
+        template<typename T>
+        struct type_info
+        {
+            static const accel::type_info& get()
+            {
+                static const accel::type_info info(in_place_type_t<T>{});
+                return info;
+            }
+        };
+    }
+
+    template<typename T>
+    const type_info& get_type_info()
+    {
+        return details::type_info<typename details::remove_cvref<T>::type>::get();
+    }
+
+    template<typename T>
+    const type_info& get_qualified_type_info()
+    {
+        return details::type_info<T>::get();
+    }
+}
+
+#endif
